@@ -202,8 +202,14 @@ async def fetch_youtube_chat(guild_id, video_id):
                     author_raw = item['authorDetails']['displayName']
                     message = item['snippet']['displayMessage']
                     
-                    # Clean the author name (remove @)
-                    author_name = author_raw.replace("@", "")
+                    # Clean the author name (Total Clean: No symbols, No numbers, Supports Indian Scripts)
+                    # 1. Replace all symbols (anything not a word character or space) with a space
+                    clean_name = re.sub(r'[^\w\s]', ' ', author_raw)
+                    # 2. Specifically remove underscores and numbers (which are part of \w)
+                    clean_name = clean_name.replace("_", " ")
+                    clean_name = re.sub(r'\d+', '', clean_name)
+                    # 3. Clean up extra spaces
+                    author_name = " ".join(clean_name.split())
 
                     # Filter Logic
                     author_clean = author_name.strip().lower()
@@ -220,12 +226,14 @@ async def fetch_youtube_chat(guild_id, video_id):
                     if author_clean == state.last_author:
                         # Same person as before, just read the message
                         full_text = message
+                        log_prefix = f"message from {author_raw} (continued) -"
                     else:
                         # New person, say the name with a slight pause (comma)
                         full_text = f"{author_name}, {message}"
                         state.last_author = author_clean
+                        log_prefix = f"message from {author_raw} - {author_name},"
 
-                    logger.info(f"[READING] {full_text}")
+                    logger.info(f"[READING] {log_prefix} {message}")
                     await state.message_queue.put(full_text)
 
                 # Wait for the recommended interval before polling again
