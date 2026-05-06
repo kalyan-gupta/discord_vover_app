@@ -53,6 +53,7 @@ class GuildState:
         self.current_video_id = None
         self.is_running = False
         self.starter_id = None # Track who started the session
+        self.ignore_bots = True # Default to ignoring bots
 
     def stop(self):
         self.is_running = False
@@ -108,8 +109,11 @@ async def fetch_youtube_chat(guild_id, video_id):
                 author_clean = author_name.replace("@", "").strip().lower()
                 msg_lower = message.lower()
 
-                if any(bot_name in author_clean for bot_name in BOT_NAMES):
+                # Filter Logic from reference.py
+                if state.ignore_bots and any(bot_name in author_clean for bot_name in BOT_NAMES):
+                    logger.debug(f"Skipping bot message from {author_name}")
                     continue
+                
                 if msg_lower.startswith(COMMAND_PREFIXES):
                     continue
                 if "http" in msg_lower or "www." in msg_lower:
@@ -236,6 +240,9 @@ async def leave(interaction: discord.Interaction):
 @bot.tree.command(name="read_ytchat", description="Start voicing over a YouTube live chat")
 @app_commands.describe(video_id="The Video ID or full YouTube URL")
 async def read_ytchat(interaction: discord.Interaction, video_id: str):
+    # Get state first
+    state = bot.get_state(interaction.guild_id)
+    
     # Check if bot is in a voice channel
     voice_client = interaction.guild.voice_client
     
@@ -259,7 +266,6 @@ async def read_ytchat(interaction: discord.Interaction, video_id: str):
         await interaction.followup.send(f"Invalid YouTube Video ID or URL: `{video_id}`. Please check and try again.")
         return
 
-    state = bot.get_state(interaction.guild_id)
     if state.is_running:
         await interaction.followup.send(f"Already running voice-over for video: {state.current_video_id}. Use `/stop_ytchat` first.")
         return
@@ -284,6 +290,14 @@ async def stop_ytchat(interaction: discord.Interaction):
 
     state.stop()
     await interaction.response.send_message("Stopped YouTube voice-over.")
+
+@bot.tree.command(name="toggle_bots", description="Toggle whether to ignore or read messages from common YouTube bots")
+async def toggle_bots(interaction: discord.Interaction):
+    state = bot.get_state(interaction.guild_id)
+    state.ignore_bots = not state.ignore_bots
+    
+    status = "now ignoring" if state.ignore_bots else "now reading"
+    await interaction.response.send_message(f"Bot filtering updated: I am {status} YouTube bots (Nightbot, etc.).")
 
 if __name__ == "__main__":
     if not TOKEN:
