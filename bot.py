@@ -352,7 +352,15 @@ async def join(interaction: discord.Interaction):
         if interaction.guild.voice_client:
             await interaction.guild.voice_client.move_to(channel)
         else:
-            await channel.connect()
+            try:
+                await channel.connect(timeout=60.0)
+            except asyncio.TimeoutError:
+                await interaction.response.send_message("Join timed out. Please try again!", ephemeral=True)
+                return
+            except Exception as e:
+                await interaction.response.send_message(f"Failed to join: {e}", ephemeral=True)
+                return
+                
         await interaction.response.send_message(f"Joined {channel.name}! (Session started by {interaction.user.display_name})")
     else:
         await interaction.response.send_message("You are not in a voice channel!", ephemeral=True)
@@ -381,8 +389,16 @@ async def read_ytchat(interaction: discord.Interaction, video_id: str):
         # Bot is not in a channel, try to join the user
         if interaction.user.voice:
             channel = interaction.user.voice.channel
-            voice_client = await channel.connect()
-            state.starter_id = interaction.user.id # Set the starter
+            try:
+                # Set a longer timeout (60s) for voice connection
+                voice_client = await channel.connect(timeout=60.0)
+                state.starter_id = interaction.user.id
+            except asyncio.TimeoutError:
+                await interaction.response.send_message("I timed out while trying to join the voice channel. Please try again!", ephemeral=True)
+                return
+            except Exception as e:
+                await interaction.response.send_message(f"I couldn't join the voice channel: {e}", ephemeral=True)
+                return
         else:
             await interaction.response.send_message("You need to be in a voice channel for me to join you!", ephemeral=True)
             return
