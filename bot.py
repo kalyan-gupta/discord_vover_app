@@ -4,7 +4,6 @@ import time
 import discord
 import edge_tts
 import tempfile
-import pytchat
 import logging
 import re
 from discord.ext import commands
