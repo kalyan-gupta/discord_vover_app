@@ -59,10 +59,12 @@ class GuildState:
         self.starter_id = None # Track who started the session
         self.ignore_bots = True # Default to ignoring bots
         self.voice = VOICE # Default voice
+        self.last_author = None # Track the last person who spoke
 
     def stop(self):
         self.is_running = False
         self.starter_id = None
+        self.last_author = None # Reset speaker tracking
         if self.youtube_task:
             self.youtube_task.cancel()
         if self.tts_task:
@@ -211,7 +213,15 @@ async def fetch_youtube_chat(guild_id, video_id):
                     if "http" in msg_lower or "www." in msg_lower:
                         continue
 
-                    full_text = f"{author_name} says {message}"
+                    # Radio Style with Smart Filter
+                    if author_clean == state.last_author:
+                        # Same person as before, just read the message
+                        full_text = message
+                    else:
+                        # New person, say the name with a slight pause (comma)
+                        full_text = f"{author_name}, {message}"
+                        state.last_author = author_clean
+
                     logger.info(f"[READING] {full_text}")
                     await state.message_queue.put(full_text)
 
