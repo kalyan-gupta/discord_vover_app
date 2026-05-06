@@ -242,6 +242,20 @@ async def fetch_youtube_chat(guild_id, video_id):
     finally:
         logger.info(f"Stopped listening to YouTube video: {video_id} for Guild: {guild_id}")
 
+def detect_voice(text, default_voice):
+    """Detects if the text contains Hindi, Telugu, or Tamil script and returns the best voice."""
+    # Check for Hindi (Devanagari)
+    if re.search(r'[\u0900-\u097F]', text):
+        return "hi-IN-SwaraNeural"
+    # Check for Telugu
+    if re.search(r'[\u0C00-\u0C7F]', text):
+        return "te-IN-ShrutiNeural"
+    # Check for Tamil
+    if re.search(r'[\u0B80-\u0BFF]', text):
+        return "ta-IN-PallaviNeural"
+    
+    return default_voice
+
 async def tts_worker(guild_id):
     """Processes the queue and speaks messages in Discord."""
     state = bot.get_state(guild_id)
@@ -257,11 +271,14 @@ async def tts_worker(guild_id):
                 state.message_queue.task_done()
                 continue
 
-            # Generate TTS using the guild's selected voice
+            # Detect the best voice for this specific message
+            selected_voice = detect_voice(text, state.voice)
+            
+            # Generate TTS using the detected voice
             with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as tmp:
                 temp_path = tmp.name
 
-            communicate = edge_tts.Communicate(text, state.voice)
+            communicate = edge_tts.Communicate(text, selected_voice)
             await communicate.save(temp_path)
 
             # Wait for current audio to finish if any
@@ -413,12 +430,16 @@ async def toggle_bots(interaction: discord.Interaction):
 @bot.tree.command(name="set_voice", description="Change the voice used for text-to-speech")
 @app_commands.describe(voice="Choose a voice")
 @app_commands.choices(voice=[
-    app_commands.Choice(name="Neerja (Indian Female)", value="en-IN-NeerjaNeural"),
-    app_commands.Choice(name="Prabhat (Indian Male)", value="en-IN-PrabhatNeural"),
+    app_commands.Choice(name="Neerja (Indian English Female)", value="en-IN-NeerjaNeural"),
+    app_commands.Choice(name="Prabhat (Indian English Male)", value="en-IN-PrabhatNeural"),
+    app_commands.Choice(name="Swara (Hindi Female)", value="hi-IN-SwaraNeural"),
+    app_commands.Choice(name="Madhur (Hindi Male)", value="hi-IN-MadhurNeural"),
     app_commands.Choice(name="Jenny (US Female)", value="en-US-JennyNeural"),
     app_commands.Choice(name="Guy (US Male)", value="en-US-GuyNeural"),
     app_commands.Choice(name="Sonia (UK Female)", value="en-GB-SoniaNeural"),
     app_commands.Choice(name="Ryan (UK Male)", value="en-GB-RyanNeural"),
+    app_commands.Choice(name="Pallavi (Tamil Female)", value="ta-IN-PallaviNeural"),
+    app_commands.Choice(name="Shruti (Telugu Female)", value="te-IN-ShrutiNeural"),
 ])
 async def set_voice(interaction: discord.Interaction, voice: app_commands.Choice[str]):
     state = bot.get_state(interaction.guild_id)
