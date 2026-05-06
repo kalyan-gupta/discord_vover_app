@@ -54,6 +54,7 @@ class GuildState:
         self.is_running = False
         self.starter_id = None # Track who started the session
         self.ignore_bots = True # Default to ignoring bots
+        self.voice = VOICE # Default voice
 
     def stop(self):
         self.is_running = False
@@ -146,11 +147,11 @@ async def tts_worker(guild_id):
                 state.message_queue.task_done()
                 continue
 
-            # Generate TTS
+            # Generate TTS using the guild's selected voice
             with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as tmp:
                 temp_path = tmp.name
 
-            communicate = edge_tts.Communicate(text, VOICE)
+            communicate = edge_tts.Communicate(text, state.voice)
             await communicate.save(temp_path)
 
             # Wait for current audio to finish if any
@@ -298,6 +299,21 @@ async def toggle_bots(interaction: discord.Interaction):
     
     status = "now ignoring" if state.ignore_bots else "now reading"
     await interaction.response.send_message(f"Bot filtering updated: I am {status} YouTube bots (Nightbot, etc.).")
+
+@bot.tree.command(name="set_voice", description="Change the voice used for text-to-speech")
+@app_commands.describe(voice="Choose a voice")
+@app_commands.choices(voice=[
+    app_commands.Choice(name="Neerja (Indian Female)", value="en-IN-NeerjaNeural"),
+    app_commands.Choice(name="Prabhat (Indian Male)", value="en-IN-PrabhatNeural"),
+    app_commands.Choice(name="Jenny (US Female)", value="en-US-JennyNeural"),
+    app_commands.Choice(name="Guy (US Male)", value="en-US-GuyNeural"),
+    app_commands.Choice(name="Sonia (UK Female)", value="en-GB-SoniaNeural"),
+    app_commands.Choice(name="Ryan (UK Male)", value="en-GB-RyanNeural"),
+])
+async def set_voice(interaction: discord.Interaction, voice: app_commands.Choice[str]):
+    state = bot.get_state(interaction.guild_id)
+    state.voice = voice.value
+    await interaction.response.send_message(f"Voice updated to: **{voice.name}**")
 
 if __name__ == "__main__":
     if not TOKEN:
