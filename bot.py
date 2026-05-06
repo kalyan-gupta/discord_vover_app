@@ -43,7 +43,7 @@ TOKEN = os.getenv("DISCORD_TOKEN")
 YT_KEY = os.getenv("YT_KEY")
 
 # Bot Configuration
-VOICE = "en-IN-NeerjaNeural"
+VOICE = "hi-IN-SwaraNeural"
 BOT_NAMES = ["nightbot", "streamelements", "streamlabs", "moobot"]
 COMMAND_PREFIXES = ("!", "/", "$", "#")
 
