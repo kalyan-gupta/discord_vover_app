@@ -1,0 +1,25 @@
+# Secrets
+.env
+
+# Reference files
+reference.py
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv
+venv/
+ENV/
+env/
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Logs
+*.log
+
+# Temp files
+*.mp3
+tmp/
