@@ -199,8 +199,11 @@ async def fetch_youtube_chat(guild_id, video_id):
 
                 # 3. Process new messages
                 for item in chat_response.get('items', []):
-                    author_name = item['authorDetails']['displayName']
+                    author_raw = item['authorDetails']['displayName']
                     message = item['snippet']['displayMessage']
+                    
+                    # Clean the author name (remove @)
+                    author_name = author_raw.replace("@", "")
 
                     # Filter Logic
                     author_clean = author_name.strip().lower()
