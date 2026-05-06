@@ -4,9 +4,35 @@ import discord
 import edge_tts
 import tempfile
 import pytchat
+import logging
+import re
 from discord.ext import commands
 from discord import app_commands
 from dotenv import load_dotenv
+
+# Configure Logging
+logging.basicConfig(
+    level=logging.INFO, # Change to logging.DEBUG for more verbosity
+    format='%(asctime)s - %(levelname)s - %(name)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+logger = logging.getLogger('VoiceOverBot')
+
+def extract_video_id(url_or_id):
+    """Extracts the YouTube Video ID from a URL or returns the input if it's already an ID."""
+    # Regex for various YouTube URL formats
+    patterns = [
+        r"(?:v=|\/)([0-9A-Za-z_-]{11}).*", # matches ?v=ID or /ID
+        r"youtu\.be\/([0-9A-Za-z_-]{11})",  # matches youtu.be/ID
+    ]
+    
+    for pattern in patterns:
+        match = re.search(pattern, url_or_id)
+        if match:
+            return match.group(1)
+    
+    # If no match, assume it's already a raw ID (11 chars)
+    return url_or_id.strip()
 
 # Load environment variables
 load_dotenv()
@@ -56,7 +82,7 @@ class VoiceOverBot(commands.Bot):
 
     async def setup_hook(self):
         await self.tree.sync()
-        print(f"Slash commands synced for {self.user}")
+        logger.info(f"Slash commands synced for {self.user}")
 
 bot = VoiceOverBot()
 
@@ -65,7 +91,7 @@ async def fetch_youtube_chat(guild_id, video_id):
     state = bot.get_state(guild_id)
     try:
         chat = pytchat.create(video_id=video_id)
-        print(f"Started listening to YouTube video: {video_id} for Guild: {guild_id}")
+        logger.info(f"Started listening to YouTube video: {video_id} for Guild: {guild_id}")
         
         while state.is_running and chat.is_alive():
             for c in chat.get().sync_items():
@@ -74,6 +100,7 @@ async def fetch_youtube_chat(guild_id, video_id):
                 
                 author_name = c.author.name
                 message = c.message.strip()
+                logger.debug(f"New chat item: {author_name}: {message}")
 
                 # Filter Logic from reference.py
                 author_clean = author_name.replace("@", "").strip().lower()
@@ -89,13 +116,14 @@ async def fetch_youtube_chat(guild_id, video_id):
                 display_name = author_name.replace("@", "")
                 full_text = f"{display_name} says {message}"
                 
+                logger.info(f"[READING] {full_text}")
                 await state.message_queue.put(full_text)
             
             await asyncio.sleep(1)
     except Exception as e:
-        print(f"YouTube Chat Error in guild {guild_id}: {e}")
+        logger.error(f"YouTube Chat Error in guild {guild_id}: {e}", exc_info=True)
     finally:
-        print(f"Stopped listening to YouTube video: {video_id} for Guild: {guild_id}")
+        logger.info(f"Stopped listening to YouTube video: {video_id} for Guild: {guild_id}")
 
 async def tts_worker(guild_id):
     """Processes the queue and speaks messages in Discord."""
@@ -105,6 +133,7 @@ async def tts_worker(guild_id):
     while state.is_running:
         try:
             text = await state.message_queue.get()
+            logger.debug(f"Processing message from queue: {text}")
             voice_client = guild.voice_client
             
             if not voice_client or not voice_client.is_connected():
@@ -127,12 +156,13 @@ async def tts_worker(guild_id):
             
             def after_playing(error):
                 if error:
-                    print(f"Playback error in guild {guild_id}: {error}")
+                    logger.error(f"Playback error in guild {guild_id}: {error}")
                 if os.path.exists(temp_path):
                     try:
                         os.remove(temp_path)
-                    except:
-                        pass
+                        logger.debug(f"Cleaned up temp file: {temp_path}")
+                    except Exception as e:
+                        logger.warning(f"Failed to remove temp file {temp_path}: {e}")
 
             voice_client.play(source, after=after_playing)
             
@@ -144,13 +174,13 @@ async def tts_worker(guild_id):
         except asyncio.CancelledError:
             break
         except Exception as e:
-            print(f"TTS Worker Error in guild {guild_id}: {e}")
+            logger.error(f"TTS Worker Error in guild {guild_id}: {e}", exc_info=True)
             await asyncio.sleep(1)
 
 @bot.event
 async def on_ready():
-    print(f"Logged in as {bot.user} (ID: {bot.user.id})")
-    print("------")
+    logger.info(f"Logged in as {bot.user} (ID: {bot.user.id})")
+    logger.info("------")
 
 @bot.tree.command(name="join", description="Join the voice channel you are currently in")
 async def join(interaction: discord.Interaction):
@@ -175,62 +205,41 @@ async def leave(interaction: discord.Interaction):
     else:
         await interaction.response.send_message("I'm not in a voice channel!", ephemeral=True)
 
-@bot.tree.command(name="speak", description="Speak text in the voice channel")
-@app_commands.describe(text="The text you want the bot to say")
-async def speak(interaction: discord.Interaction, text: str):
+@bot.tree.command(name="read_ytchat", description="Start voicing over a YouTube live chat")
+@app_commands.describe(video_id="The Video ID or full YouTube URL")
+async def read_ytchat(interaction: discord.Interaction, video_id: str):
     if not interaction.guild.voice_client:
         await interaction.response.send_message("I need to be in a voice channel first! Use `/join`", ephemeral=True)
         return
 
+    # Defer immediately to avoid "Unknown Interaction" (3-second timeout)
     await interaction.response.defer()
+
+    # Parse the ID if a URL was provided
+    actual_id = extract_video_id(video_id)
     
-    # For manual speak, we just put it in the queue if a worker is running, 
-    # otherwise we play it directly.
-    state = bot.get_state(interaction.guild_id)
-    if state.is_running:
-        await state.message_queue.put(text)
-        await interaction.followup.send(f"Added to queue: {text}")
-    else:
-        # One-off playback (same logic as before)
-        try:
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as tmp:
-                temp_path = tmp.name
-            communicate = edge_tts.Communicate(text, VOICE)
-            await communicate.save(temp_path)
-            
-            voice_client = interaction.guild.voice_client
-            if voice_client.is_playing():
-                voice_client.stop()
-
-            source = discord.FFmpegPCMAudio(executable="/usr/bin/ffmpeg", source=temp_path)
-            def after_playing(e):
-                if os.path.exists(temp_path): os.remove(temp_path)
-            voice_client.play(source, after=after_playing)
-            await interaction.followup.send(f"Speaking: {text}")
-        except Exception as e:
-            await interaction.followup.send(f"Error: {e}")
-
-@bot.tree.command(name="youtube_start", description="Start voicing over a YouTube live chat")
-@app_commands.describe(video_id="The ID of the YouTube video (e.g., SEnXZzGu4w0)")
-async def youtube_start(interaction: discord.Interaction, video_id: str):
-    if not interaction.guild.voice_client:
-        await interaction.response.send_message("I need to be in a voice channel first! Use `/join`", ephemeral=True)
+    if len(actual_id) != 11:
+        await interaction.followup.send(f"Invalid YouTube Video ID or URL: `{video_id}`. Please check and try again.")
         return
 
     state = bot.get_state(interaction.guild_id)
     if state.is_running:
-        await interaction.response.send_message(f"Already running voice-over for video: {state.current_video_id}. Use `/youtube_stop` first.", ephemeral=True)
+        await interaction.followup.send(f"Already running voice-over for video: {state.current_video_id}. Use `/stop_ytchat` first.")
         return
 
-    state.is_running = True
-    state.current_video_id = video_id
-    state.youtube_task = asyncio.create_task(fetch_youtube_chat(interaction.guild_id, video_id))
-    state.tts_task = asyncio.create_task(tts_worker(interaction.guild_id))
+    try:
+        state.is_running = True
+        state.current_video_id = actual_id
+        state.youtube_task = asyncio.create_task(fetch_youtube_chat(interaction.guild_id, actual_id))
+        state.tts_task = asyncio.create_task(tts_worker(interaction.guild_id))
 
-    await interaction.response.send_message(f"Starting YouTube voice-over for video ID: `{video_id}`")
+        await interaction.followup.send(f"Starting YouTube voice-over for video: `https://youtu.be/{actual_id}`")
+    except Exception as e:
+        state.stop()
+        await interaction.followup.send(f"Failed to start: {e}")
 
-@bot.tree.command(name="youtube_stop", description="Stop the YouTube live chat voice-over")
-async def youtube_stop(interaction: discord.Interaction):
+@bot.tree.command(name="stop_ytchat", description="Stop the YouTube live chat voice-over")
+async def stop_ytchat(interaction: discord.Interaction):
     state = bot.get_state(interaction.guild_id)
     if not state.is_running:
         await interaction.response.send_message("No YouTube voice-over is currently running.", ephemeral=True)
@@ -241,6 +250,16 @@ async def youtube_stop(interaction: discord.Interaction):
 
 if __name__ == "__main__":
     if not TOKEN:
-        print("Error: DISCORD_TOKEN not found in environment variables.")
+        logger.critical("DISCORD_TOKEN not found in environment variables.")
     else:
-        bot.run(TOKEN)
+        try:
+            # Increase verbosity of discord logs if needed
+            # logging.getLogger('discord').setLevel(logging.DEBUG)
+            bot.run(TOKEN, log_handler=None)
+        except KeyboardInterrupt:
+            logger.info("Shutdown signal received (Ctrl+C). Cleaning up...")
+        finally:
+            # Ensure the bot is closed gracefully
+            if not bot.is_closed():
+                asyncio.run(bot.close())
+            logger.info("Bot has been shut down.")
