@@ -11,6 +11,8 @@ from discord.ext import commands
 from discord import app_commands
 from dotenv import load_dotenv
 from aiohttp import web
+from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
 
 # Configure Logging
 logging.basicConfig(
@@ -39,9 +41,10 @@ def extract_video_id(url_or_id):
 # Load environment variables
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
+YT_KEY = os.getenv("YT_KEY")
 
 # Bot Configuration
-VOICE = "en-IN-PrabhatNeural"
+VOICE = "en-IN-NeerjaNeural"
 BOT_NAMES = ["nightbot", "streamelements", "streamlabs", "moobot"]
 COMMAND_PREFIXES = ("!", "/", "$", "#")
 
@@ -126,51 +129,107 @@ class VoiceOverBot(commands.Bot):
             "guild_count": len(self.guilds),
             "active_youtube_sessions": active_sessions,
             "uptime_seconds": uptime_seconds,
-            "version": "1.2.0"
+            "version": "1.3.0"
         }
         return web.json_response(status_data)
 
 bot = VoiceOverBot()
 
 async def fetch_youtube_chat(guild_id, video_id):
-    """Polls YouTube Chat and feeds the message queue."""
+    """Polls Official YouTube API and feeds the message queue."""
     state = bot.get_state(guild_id)
+    
+    if not YT_KEY:
+        logger.error("YouTube API Key (YT_KEY) missing in environment variables.")
+        return
+
     try:
-        chat = pytchat.create(video_id=video_id)
-        logger.info(f"Started listening to YouTube video: {video_id} for Guild: {guild_id}")
+        # Initialize the YouTube client
+        youtube = build('youtube', 'v3', developerKey=YT_KEY)
         
-        while state.is_running and chat.is_alive():
-            for c in chat.get().sync_items():
-                if not state.is_running:
-                    break
-                
-                author_name = c.author.name
-                message = c.message.strip()
-                logger.debug(f"New chat item: {author_name}: {message}")
+        # 1. Get the Live Chat ID from the Video ID
+        video_response = youtube.videos().list(
+            part='liveStreamingDetails',
+            id=video_id
+        ).execute()
 
-                # Filter Logic from reference.py
-                author_clean = author_name.replace("@", "").strip().lower()
-                msg_lower = message.lower()
-
-                # Filter Logic from reference.py
-                if state.ignore_bots and any(bot_name in author_clean for bot_name in BOT_NAMES):
-                    logger.debug(f"Skipping bot message from {author_name}")
-                    continue
-                
-                if msg_lower.startswith(COMMAND_PREFIXES):
-                    continue
-                if "http" in msg_lower or "www." in msg_lower:
-                    continue
-
-                display_name = author_name.replace("@", "")
-                full_text = f"{display_name} says {message}"
-                
-                logger.info(f"[READING] {full_text}")
-                await state.message_queue.put(full_text)
+        if not video_response['items']:
+            logger.error(f"Video {video_id} not found.")
+            return
             
-            await asyncio.sleep(1)
+        live_details = video_response['items'][0].get('liveStreamingDetails')
+        if not live_details:
+            logger.error(f"Video {video_id} is not a live stream or has no streaming details.")
+            return
+            
+        chat_id = live_details.get('activeLiveChatId')
+        if not chat_id:
+            logger.error(f"No active live chat found for video {video_id}.")
+            return
+
+        logger.info(f"Started monitoring Official YouTube Chat: {chat_id} for video: {video_id}")
+        
+        # Initial call to get the 'nextPageToken' and ignore the backlog
+        chat_response = youtube.liveChatMessages().list(
+            liveChatId=chat_id,
+            part='snippet,authorDetails'
+        ).execute()
+        
+        next_page_token = chat_response.get('nextPageToken')
+        wait_time_ms = chat_response.get('pollingIntervalMillis', 5000)
+        logger.info(f"Ignoring chat backlog. Waiting {wait_time_ms/1000}s for new messages...")
+        
+        # We MUST wait after the first call before asking for the next one
+        await asyncio.sleep(wait_time_ms / 1000.0)
+
+        while state.is_running:
+            try:
+                # 2. List chat messages
+                chat_response = youtube.liveChatMessages().list(
+                    liveChatId=chat_id,
+                    part='snippet,authorDetails',
+                    pageToken=next_page_token
+                ).execute()
+
+                # Update pagination and polling interval
+                next_page_token = chat_response.get('nextPageToken')
+                wait_time_ms = chat_response.get('pollingIntervalMillis', 5000)
+                wait_time = wait_time_ms / 1000.0
+
+                # 3. Process new messages
+                for item in chat_response.get('items', []):
+                    author_name = item['authorDetails']['displayName']
+                    message = item['snippet']['displayMessage']
+
+                    # Filter Logic
+                    author_clean = author_name.strip().lower()
+                    msg_lower = message.lower()
+
+                    if state.ignore_bots and any(bot_name in author_clean for bot_name in BOT_NAMES):
+                        continue
+                    if msg_lower.startswith(COMMAND_PREFIXES):
+                        continue
+                    if "http" in msg_lower or "www." in msg_lower:
+                        continue
+
+                    full_text = f"{author_name} says {message}"
+                    logger.info(f"[READING] {full_text}")
+                    await state.message_queue.put(full_text)
+
+                # Wait for the recommended interval before polling again
+                await asyncio.sleep(wait_time)
+
+            except HttpError as e:
+                logger.error(f"YouTube API Error (HTTP {e.resp.status}): {e.content}")
+                if e.resp.status in [403, 404]: # Quota exceeded or chat closed
+                    break
+                await asyncio.sleep(10) # Back off on other errors
+            except Exception as e:
+                logger.error(f"Error in chat processing loop: {e}")
+                await asyncio.sleep(5)
+
     except Exception as e:
-        logger.error(f"YouTube Chat Error in guild {guild_id}: {e}", exc_info=True)
+        logger.error(f"Fatal YouTube Chat Error in guild {guild_id}: {e}", exc_info=True)
     finally:
         logger.info(f"Stopped listening to YouTube video: {video_id} for Guild: {guild_id}")
 
