@@ -1,5 +1,6 @@
 import os
 import asyncio
+import time
 import discord
 import edge_tts
 import tempfile
@@ -9,6 +10,7 @@ import re
 from discord.ext import commands
 from discord import app_commands
 from dotenv import load_dotenv
+from aiohttp import web
 
 # Configure Logging
 logging.basicConfig(
@@ -78,6 +80,7 @@ class VoiceOverBot(commands.Bot):
         intents.voice_states = True
         super().__init__(command_prefix="!", intents=intents)
         self.guild_states = {}
+        self.start_time = time.time()
 
     def get_state(self, guild_id):
         if guild_id not in self.guild_states:
@@ -87,6 +90,45 @@ class VoiceOverBot(commands.Bot):
     async def setup_hook(self):
         await self.tree.sync()
         logger.info(f"Slash commands synced for {self.user}")
+        
+        # Start the health check server
+        await self.start_health_check()
+
+    async def start_health_check(self):
+        """Starts a lightweight web server for Render health checks."""
+        app = web.Application()
+        app.router.add_get('/', self.handle_health_check)
+        app.router.add_get('/health', self.handle_health_check)
+        app.router.add_get('/status', self.handle_bot_status)
+        
+        runner = web.AppRunner(app)
+        await runner.setup()
+        
+        # Get port from environment (.env or Render)
+        port = int(os.getenv("PORT", 8080))
+        site = web.TCPSite(runner, '0.0.0.0', port)
+        
+        await site.start()
+        logger.info(f"Health check & Status server started on port {port}")
+
+    async def handle_health_check(self, request):
+        return web.Response(text="OK", status=200)
+
+    async def handle_bot_status(self, request):
+        """Returns a detailed JSON status of the bot."""
+        active_sessions = sum(1 for s in self.guild_states.values() if s.is_running)
+        uptime_seconds = int(time.time() - self.start_time)
+        
+        status_data = {
+            "status": "online",
+            "bot_user": str(self.user),
+            "latency_ms": round(self.latency * 1000, 2),
+            "guild_count": len(self.guilds),
+            "active_youtube_sessions": active_sessions,
+            "uptime_seconds": uptime_seconds,
+            "version": "1.2.0"
+        }
+        return web.json_response(status_data)
 
 bot = VoiceOverBot()
 
