@@ -1,0 +1,4 @@
+discord.py[voice]
+pytchat
+edge-tts
+python-dotenv
