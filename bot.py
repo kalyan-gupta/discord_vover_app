@@ -52,9 +52,11 @@ class GuildState:
         self.message_queue = asyncio.Queue()
         self.current_video_id = None
         self.is_running = False
+        self.starter_id = None # Track who started the session
 
     def stop(self):
         self.is_running = False
+        self.starter_id = None
         if self.youtube_task:
             self.youtube_task.cancel()
         if self.tts_task:
@@ -182,15 +184,41 @@ async def on_ready():
     logger.info(f"Logged in as {bot.user} (ID: {bot.user.id})")
     logger.info("------")
 
+@bot.event
+async def on_voice_state_update(member, before, after):
+    """Auto-leave if the starter leaves or the bot is left alone."""
+    guild_id = member.guild.id
+    state = bot.get_state(guild_id)
+    voice_client = member.guild.voice_client
+
+    if not voice_client:
+        return
+
+    # 1. If the person who started the bot leaves the channel
+    if member.id == state.starter_id and before.channel == voice_client.channel and after.channel != voice_client.channel:
+        logger.info(f"Starter {member.name} left the channel. Shutting down in guild {guild_id}.")
+        state.stop()
+        await voice_client.disconnect()
+        return
+
+    # 2. If the bot is left alone in the channel
+    if voice_client.channel and len(voice_client.channel.members) == 1: # Just the bot
+        logger.info(f"Bot left alone in channel. Shutting down in guild {guild_id}.")
+        state.stop()
+        await voice_client.disconnect()
+
 @bot.tree.command(name="join", description="Join the voice channel you are currently in")
 async def join(interaction: discord.Interaction):
     if interaction.user.voice:
         channel = interaction.user.voice.channel
+        state = bot.get_state(interaction.guild_id)
+        state.starter_id = interaction.user.id # Set the starter
+        
         if interaction.guild.voice_client:
             await interaction.guild.voice_client.move_to(channel)
         else:
             await channel.connect()
-        await interaction.response.send_message(f"Joined {channel.name}!")
+        await interaction.response.send_message(f"Joined {channel.name}! (Session started by {interaction.user.display_name})")
     else:
         await interaction.response.send_message("You are not in a voice channel!", ephemeral=True)
 
@@ -208,9 +236,18 @@ async def leave(interaction: discord.Interaction):
 @bot.tree.command(name="read_ytchat", description="Start voicing over a YouTube live chat")
 @app_commands.describe(video_id="The Video ID or full YouTube URL")
 async def read_ytchat(interaction: discord.Interaction, video_id: str):
-    if not interaction.guild.voice_client:
-        await interaction.response.send_message("I need to be in a voice channel first! Use `/join`", ephemeral=True)
-        return
+    # Check if bot is in a voice channel
+    voice_client = interaction.guild.voice_client
+    
+    if not voice_client:
+        # Bot is not in a channel, try to join the user
+        if interaction.user.voice:
+            channel = interaction.user.voice.channel
+            voice_client = await channel.connect()
+            state.starter_id = interaction.user.id # Set the starter
+        else:
+            await interaction.response.send_message("You need to be in a voice channel for me to join you!", ephemeral=True)
+            return
 
     # Defer immediately to avoid "Unknown Interaction" (3-second timeout)
     await interaction.response.defer()
